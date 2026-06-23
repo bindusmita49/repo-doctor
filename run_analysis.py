@@ -20,7 +20,6 @@ import asyncio
 import re
 import sys
 import json
-import base64
 import os
 from dotenv import load_dotenv
 
@@ -103,22 +102,6 @@ async def fetch_repo_code_contents(repo_url: str) -> str:
         print(f"Fetching content of: {path}...")
         try:
             content = await get_scrubbed_file_contents.func(owner, repo, path)
-            # Try to parse the content JSON to extract the clean file text
-            try:
-                data = json.loads(content)
-                if isinstance(data, dict) and "content" in data:
-                    raw_content = data["content"]
-                    if data.get("encoding") == "base64":
-                        try:
-                            if "\n" not in raw_content:
-                                decoded_bytes = base64.b64decode(raw_content)
-                                raw_content = decoded_bytes.decode("utf-8", errors="ignore")
-                        except Exception:
-                            pass
-                    content = raw_content
-            except Exception:
-                pass
-                
             combined_content.append(f"=== FILE: {path} ===\n{content}\n")
         except Exception as e:
             print(f"Failed to fetch content of {path}: {e}")
