@@ -1,128 +1,208 @@
 # 🩺 Repo Doctor
 
-> An AI agent system that reviews public GitHub repositories for **code quality**
-> and **security issues**, built with [Google ADK](https://adk.dev/) and Gemini.
+An AI-powered multi-agent system built on the Google Agent Development Kit (ADK) that reviews public GitHub repositories for code quality and security vulnerabilities.
+
+[![Python Version](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Google ADK](https://img.shields.io/badge/Google%20ADK-1.0.0%2B-orange)](https://github.com/google/interactive-media-ads-python)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.35%2B-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
 
-## ✨ What It Does
+## 🔍 What It Does
 
-Repo Doctor is a multi-agent application.  You point it at any public GitHub
-repository URL and it returns a structured review covering:
+Repo Doctor leverages a **multi-agent architecture** powered by Gemini 2.5 Flash and Google ADK to analyze GitHub repositories. It coordinates specialized agents to analyze repository files, redact sensitive keys before processing, and generate a unified report.
 
-| Agent *(coming soon)* | What it checks |
-|---|---|
-| 🧹 **Code Quality Agent** | Naming conventions, code smells, complexity, dead code |
-| 🔒 **Security Agent** | Hardcoded secrets, known vulnerable dependency patterns, unsafe practices |
-| 📋 **Orchestrator** | Combines both reports into a single actionable summary |
+### Multi-Agent Architecture
+- **Coordinator Agent (`coordinator_agent`)**: The main orchestrator. It accepts a GitHub repository URL from the user, invokes the specialized sub-agents sequentially, and compiles their findings into a cohesive, structured Markdown report.
+- **Code Quality Agent (`code_quality_agent`)**: Analyzes the repository layout, inspects main source files, and reviews code readability, structure, error handling, and bad coding patterns.
+- **Security Agent (`security_agent`)**: Scans code and configuration files (such as dependency manifests) to identify security vulnerabilities, vulnerable dependency patterns, insecure practices, and hardcoded credentials.
 
-The **hello_agent** in this scaffold is a smoke-test agent that confirms your
-API key and installation are working before you build anything more complex.
+### Secure, Read-Only Repository Fetching
+- Both agents use the **GitHub MCP Server** via standard Model Context Protocol (MCP) tool calls (`list_repo_files` and `get_scrubbed_file_contents`) to interact with the repository.
+- **Secret Redaction**: To protect developer privacy and security, a regex-based pre-processing scrubber runs on file contents inside `tools/github_tools.py`. Any detected GitHub tokens, Google API keys, GCP credentials, or generic bearer tokens are redacted **before** the code content is sent to Gemini.
+
+---
+
+## 🏗️ Architecture Flow
+
+```
+                      ┌──────────────┐
+                      │     User     │
+                      └──────┬───────┘
+                             │
+                             ▼
+              ┌─────────────────────────────┐
+              │  Streamlit UI / CLI Runner  │
+              └──────────────┬──────────────┘
+                             │ (GitHub URL)
+                             ▼
+              ┌─────────────────────────────┐
+              │      coordinator_agent      │
+              └──────┬───────────────┬──────┘
+                     │               │
+            ┌────────▼───────┐┌──────▼────────┐
+            │  code_quality  ││   security    │
+            │    _agent      ││    _agent     │
+            └────────┬───────┘└──────┬────────┘
+                     │               │
+                     └───────┬───────┘
+                             │ (MCP: list_repo_files, get_scrubbed_file_contents)
+                             ▼
+              ┌─────────────────────────────┐
+              │      GitHub MCP Server      │
+              └──────────────┬──────────────┘
+                             │ (Scrubbed Code Content)
+                             ▼
+              ┌─────────────────────────────┐
+              │      Gemini 2.5 Flash       │ (Fallback: 2.5-flash -> 2.0-flash -> 2.0-flash-lite)
+              └─────────────────────────────┘
+```
+
+---
+
+## 🚀 Key Features
+
+- **Multi-Agent Orchestration**: Modular sub-agents coordinate to evaluate distinct aspects of codebase health using Google ADK.
+- **GitHub MCP Server Integration**: Read-only repository interaction powered by Model Context Protocol stdio client.
+- **Privacy-First Secret Redaction**: Eliminates keys and credentials from source code before they are processed by the LLM.
+- **Robust Model Fallback Chain**: Automatically downgrades across model versions (`gemini-2.5-flash` → `gemini-2.0-flash` → `gemini-2.0-flash-lite`) if quota rate limits (HTTP 429) or connection issues occur.
+- **Intelligent Local Caching**: Caches reports locally in `analysis_cache.json` keyed by the repository URL and its latest commit SHA for up to 1 hour, minimizing API consumption.
+- **Interactive Streamlit Web UI**: Simple, sleek interface featuring a zero-setup **Sample Report Mode** that demonstrates results instantly without calling external APIs.
 
 ---
 
 ## 🗂️ Project Structure
 
 ```
-repo-doctor/
-├── agents/
+Repo_doctor/
+├── code_quality_agent/     # Code Quality Agent definition
 │   ├── __init__.py
-│   └── hello_agent.py          ← smoke-test agent (start here!)
-├── tools/
-│   └── __init__.py             ← tool functions will live here
-├── app.py                      ← main entry point / agent orchestrator
-├── requirements.txt
-├── .env.example                ← copy this to .env and add your keys
-├── .gitignore
-├── .antigravity-rules          ← project coding conventions for the AI assistant
-└── README.md
+│   └── agent.py            # Agent rules, tools configuration, and instructions
+├── coordinator_agent/      # Main orchestrator agent definitions
+│   ├── __init__.py
+│   └── agent.py            # Coordinates analysis, delegating to sub-agents
+├── hello_agent/            # Smoke-test agent for initial installation verification
+│   ├── __init__.py
+│   └── agent.py
+├── repo_reader_agent/      # Helper agent for general file-reading tasks
+│   ├── __init__.py
+│   └── agent.py
+├── security_agent/         # Security vulnerability scanning agent
+│   ├── __init__.py
+│   └── agent.py            # Rules & tools to identify unsafe patterns & hardcoded keys
+├── tools/                  # Shared helper libraries and MCP tools
+│   ├── __init__.py
+│   ├── cache.py            # Local JSON cache implementation (1-hour expiration)
+│   ├── github_tools.py     # GitHub MCP tool wrappers & regex secret scrubber
+│   └── model_config.py     # Gemini model fallback chain configuration
+├── .antigravity-rules      # Project coding rules
+├── app.py                  # Streamlit Web UI entry point
+├── requirements.txt        # Python dependency manifest
+└── run_analysis.py         # CLI entry point for headless repository analysis
 ```
 
 ---
 
-## 🚀 Quick Start
+## ⚙️ Environment Variables
 
-### 1. Prerequisites
+Create a `.env` file in the root of the project with the following configuration:
 
-- Python **3.11+**  
-- A [Gemini API key](https://aistudio.google.com/app/apikey) (free tier works)
-- *(Optional)* A [GitHub Personal Access Token](https://github.com/settings/tokens)
-  with `read:repo` scope — prevents API rate-limiting
+```env
+# Google Gemini API Key (Required for analysis)
+# Get one from: https://aistudio.google.com/app/apikey
+GEMINI_API_KEY=AIzaSy...
 
-### 2. Clone & Set Up
+# GitHub Personal Access Token (Required for the GitHub MCP Server)
+# Get one from: https://github.com/settings/tokens (no special scopes needed for public repos)
+GITHUB_TOKEN=ghp_...
+```
 
+---
+
+## ⚡ Quick Start
+
+### 1. Clone & Set Up
 ```bash
-# Clone the repo
-git clone https://github.com/YOUR_USERNAME/repo-doctor.git
+# Clone the repository
+git clone https://github.com/bindusmita49/repo-doctor.git
 cd repo-doctor
 
-# Create and activate a virtual environment
+# Create a virtual environment
 python -m venv .venv
 
-# Windows PowerShell
+# Activate the virtual environment
+# Windows PowerShell:
 .venv\Scripts\Activate.ps1
-# macOS / Linux
+# Windows CMD:
+.venv\Scripts\activate.bat
+# macOS / Linux:
 source .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Configure Your Environment
-
+### 2. Add Credentials
+Create your `.env` file in the project root:
 ```bash
-# Copy the example file
-cp .env.example .env   # Windows: copy .env.example .env
-
-# Open .env and fill in your keys:
-#   GEMINI_API_KEY=AIza...
-#   GITHUB_TOKEN=ghp_...   (optional but recommended)
+# Windows (PowerShell)
+New-Item -Path .env -ItemType File
+# macOS/Linux/Git Bash
+touch .env
+```
+Open `.env` in your editor and paste:
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+GITHUB_TOKEN=your_github_token_here
 ```
 
-### 4. Run the Smoke Test
-
-#### Option A — ADK Developer Web UI *(recommended)*
-
+### 3. Launch App
+Run the Streamlit app:
 ```bash
-adk web
+streamlit run app.py
 ```
-
-Open **http://localhost:8000** in your browser, choose **hello_agent** from the
-sidebar, and send any message.  You should get a friendly reply from Gemini.
-
-#### Option B — Headless terminal run
-
-```bash
-adk run agents/hello_agent
-```
-
-ADK will prompt you for input.  Type anything and press Enter.
-A successful response means your key is valid and everything is wired up.
 
 ---
 
-## 🧑‍💻 Development Notes
+## 🖥️ How To Run
 
-- **Never commit `.env`** — it is listed in `.gitignore`.  Only `.env.example`
-  belongs in version control.
-- **Never execute fetched repo content** — all code pulled from GitHub is
-  treated as plain text for analysis only.
-- See [`.antigravity-rules`](.antigravity-rules) for the full coding conventions
-  used in this project.
+### A. Web Application (Streamlit)
+```bash
+streamlit run app.py
+```
+- Open your browser to the URL displayed in the terminal (typically `http://localhost:8501`).
+- Enter any public GitHub repository URL (e.g., `https://github.com/octocat/Hello-World`).
+- Check **Use sample report (No API call)** to test the UI instantly without credentials, or uncheck it to run a live analysis against the real Gemini API.
+
+### B. Command-Line Interface (CLI)
+For automated checks, headlessly execute the script with:
+```bash
+python run_analysis.py <github_repo_url>
+```
+*Example:*
+```bash
+python run_analysis.py https://github.com/octocat/Hello-World
+```
+
+#### CLI Options
+* `--no-cache`: Force a fresh analysis by bypassing the local `analysis_cache.json` file.
+  ```bash
+  python run_analysis.py https://github.com/octocat/Hello-World --no-cache
+  ```
 
 ---
 
-## 🛣️ Roadmap
+## 🛠️ Built With
 
-- [x] Project scaffold & hello_agent smoke test
-- [ ] `tools/github_tools.py` — fetch repo file trees & file contents
-- [ ] `agents/code_quality_agent.py` — code quality reviewer
-- [ ] `agents/security_agent.py` — security issue detector
-- [ ] `agents/orchestrator.py` — combines both agents into a unified report
-- [ ] Streamlit UI (`app_ui.py`) — a polished web interface
+* **[Google Agent Development Kit (ADK)](https://adk.dev/)** - Framework for building and running multi-agent workflows.
+* **[Gemini 2.5 Flash](https://deepmind.google/technologies/gemini/)** - High-speed, long-context generative model for repo reasoning.
+* **[GitHub MCP Server](https://github.com/modelcontextprotocol/servers)** - Model Context Protocol server exposing repository APIs.
+* **[Streamlit](https://streamlit.io/)** - For the rapid development of the interactive web dashboard.
+* **[Python 3.11+](https://www.python.org/)** - Base programming language.
 
 ---
 
 ## 📄 License
 
-MIT — do whatever you like, just don't blame me if your repos get roasted. 😄
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
