@@ -18,11 +18,7 @@ if st.button("Diagnose Repo"):
     if not repo_url:
         st.warning("Please enter a GitHub repository URL.")
     else:
-        if use_sample:
-            with st.spinner("Repo Doctor is analyzing your repository..."):
-                time.sleep(1.5)  # Simulate some work
-                
-                sample_report = """## Code Quality Findings
+        sample_report = """## Code Quality Findings
    
 **1. Missing Error Handling**
 Severity: High
@@ -49,8 +45,14 @@ repository. Good practice observed.
 **2. Safe Dependency Usage**
 Severity: Info
 No requirements.txt found — this is a minimal library with no 
-external dependencies, reducing supply chain risk."""
-                
+external dependencies, reducing supply chain risk.
+
+---
+💡 To run a live analysis, clone the repo locally and add your own Gemini API key in the .env file."""
+
+        if use_sample:
+            with st.spinner("Repo Doctor is analyzing your repository..."):
+                time.sleep(1.5)  # Simulate some work
                 st.markdown(sample_report)
         else:
             with st.spinner("Repo Doctor is analyzing your repository..."):
@@ -59,7 +61,12 @@ external dependencies, reducing supply chain risk."""
                     
                     # Run the async function using asyncio
                     report = asyncio.run(run_with_retry(repo_url))
-                        
-                    st.markdown(report)
+                    
+                    if not report or report.startswith("[ERROR]"):
+                        st.warning("⚠️ Live analysis is temporarily unavailable due to API rate limits. Here's a sample report to demonstrate what Repo Doctor produces:")
+                        st.markdown(sample_report)
+                    else:
+                        st.markdown(report)
                 except Exception as e:
-                    st.error(f"Error during analysis: {e}")
+                    st.warning("⚠️ Live analysis is temporarily unavailable due to API rate limits. Here's a sample report to demonstrate what Repo Doctor produces:")
+                    st.markdown(sample_report)
