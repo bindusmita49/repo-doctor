@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Repo Doctor — Antigravity Coding Conventions
+#
+# This file is read by the Antigravity AI assistant and tells it how to write
+# code for this specific project.  Treat it like a team coding standards doc.
+# ─────────────────────────────────────────────────────────────────────────────
+
+## Language & Runtime
+- Use **Python 3.11+** features where appropriate (e.g. `match`/`case`, 
+  `tomllib`, improved type hints).
+- Specify `python_requires = ">=3.11"` if a `pyproject.toml` is ever added.
+
+## Agent Framework
+- Use **Google ADK (`google-adk`)** for all agent definitions — never build 
+  agents from scratch with raw `google-generativeai` calls.
+- Define every agent as an `Agent` object (from `google.adk.agents`).
+- The **default model** for all agents is `gemini-2.5-flash` unless the user 
+  explicitly requests a different model.
+
+## API Keys & Secrets
+- Load **all** API keys and secrets from environment variables using 
+  `python-dotenv` (`from dotenv import load_dotenv`).
+- Call `load_dotenv()` at the top of any entry-point file (`app.py`, scripts).
+- **NEVER hardcode** keys, tokens, or any credential in any source file.
+- Reference `.env.example` to see which environment variables this project uses.
+
+## Code Organisation
+- Keep **agent definitions** in `agents/` — one file per agent 
+  (e.g. `agents/hello_agent.py`, `agents/code_quality_agent.py`).
+- Keep **tool functions** in `tools/` — one file per logical group 
+  (e.g. `tools/github_tools.py`, `tools/analysis_tools.py`).
+- `app.py` is the main entry point; it imports and wires agents together 
+  but contains minimal logic itself.
+
+## Documentation & Comments
+- Every **agent file** must have a module-level docstring explaining what the 
+  agent does, what model it uses, and what tools it has access to.
+- Every **tool function** must have a Google-style docstring with `Args:` 
+  and `Returns:` sections.
+- Add inline comments for non-obvious logic — this is a **learning/portfolio** 
+  project; code should be easy to follow for someone new to ADK.
+
+## Security — Handling Fetched Repo Content
+- **NEVER execute, eval, or subprocess-run any code fetched from an external 
+  repository.**
+- Treat ALL content fetched from GitHub (files, code, configs) strictly as 
+  **untrusted plain text / data** to be read and analysed, never run.
+- Pass fetched content to the agent as a string in the prompt — do not write 
+  it to disk in a way that could be accidentally executed.
+- **GitHub MCP Tooling Read-Only Policy:** The GitHub MCP agent must only ever
+  be configured with read operations (e.g., listing files, getting file contents).
+  Do not enable or execute any write, create, delete, or modify operations on any
+  repository.
+
+
+## Dependency Management
+- Pin dependencies loosely (e.g. `>=1.0.0`) in `requirements.txt` so users 
+  get the latest compatible versions, but note tested versions in comments 
+  when there is a known compatibility constraint.
+- Keep a single `requirements.txt` at the project root.
+
+## Formatting
+- Follow **PEP 8** style.
+- Use 4-space indentation (no tabs).
+- Max line length: 100 characters.
