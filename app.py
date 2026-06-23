@@ -22,12 +22,12 @@ if st.button("Diagnose Repo"):
    
 **1. Missing Error Handling**
 Severity: High
-The main engine.py file has no try/except blocks around critical 
+The main.py file has no try/except blocks around critical 
 operations. If an unexpected value type is passed, it will crash silently.
 
 **2. Lack of Docstrings**
 Severity: Medium
-Most functions in nn.py are missing docstrings. While the code is 
+Most functions in utils.py are missing docstrings. While the code is 
 readable, documentation would help new contributors understand intent.
 
 **3. No Input Validation**
