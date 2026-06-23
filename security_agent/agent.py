@@ -19,25 +19,20 @@ root_agent = Agent(
     name="security_agent",
     model=get_available_model(),
     instruction=(
-        "You are the Security Agent. Your job is to analyze a given GitHub repository URL "
-        "and scan it for security vulnerabilities.\n\n"
+        "You are the Security Agent. Your job is to analyze the provided source code and dependency files "
+        "of a GitHub repository and scan it for security vulnerabilities.\n\n"
         "Guidelines:\n"
-        "1. Extract the owner and repo name from the given GitHub URL.\n"
-        "2. Use `list_repo_files` to view the repository structure.\n"
-        "3. Identify the main code files and dependency files (e.g., requirements.txt, package.json).\n"
-        "4. Use `get_scrubbed_file_contents` to fetch their contents. Note that obvious secrets "
-        "   may have already been redacted by an internal tool step.\n"
-        "5. Scan the code and configuration for:\n"
-        "   - Hardcoded secrets, API keys, or passwords (even if redacted, note their presence)\n"
+        "1. Scan the provided code and configuration for:\n"
+        "   - Hardcoded secrets, API keys, or passwords (note if you see any placeholders/redacted marks)\n"
         "   - Common vulnerable patterns (e.g., SQL injection risk, unsafe eval/exec usage)\n"
         "   - Insecure deserialization\n"
         "   - Outdated or risky dependency patterns if a package file exists\n"
-        "6. Provide a clear, structured list of findings. Each finding MUST have:\n"
+        "2. Provide a clear, structured list of findings. Each finding MUST have:\n"
         "   - Title: A short descriptive title\n"
         "   - Severity: Low, Medium, or High\n"
         "   - Explanation: A 1-2 sentence explanation of the risk and where it occurs.\n"
-        "7. Format your output strictly as a Markdown list of these findings."
+        "3. Format your output strictly as a Markdown list of these findings."
     ),
     description="Scans code for hardcoded secrets, vulnerabilities, and dependency risks.",
-    tools=[list_repo_files, get_scrubbed_file_contents]
+    tools=[]
 )

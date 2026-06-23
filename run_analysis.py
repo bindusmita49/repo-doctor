@@ -19,6 +19,9 @@ It also handles Gemini free-tier rate-limit (429) errors with automatic retries.
 import asyncio
 import re
 import sys
+import json
+import base64
+import os
 from dotenv import load_dotenv
 
 # Load .env before importing agents (agents check env vars at import time)
@@ -28,75 +31,180 @@ from google.adk import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
 from coordinator_agent.agent import root_agent
+from code_quality_agent.agent import root_agent as code_quality_agent
+from security_agent.agent import root_agent as security_agent
+from tools.github_tools import list_repo_files, get_scrubbed_file_contents
 from tools.model_config import get_available_model, fallback_to_next_model
-from tools.cache import build_cache_key, get_cached_result, set_cached_result, get_cache_info
+from tools.cache import build_cache_key, get_cached_result, set_cached_result, get_cache_info, _parse_owner_repo
 
 APP_NAME    = "repo_doctor"
 USER_ID     = "cli_user"
 MAX_RETRIES = 3  # Maximum retries on 429 rate-limit errors
 
 
-# ── Rate-limit retry helpers ──────────────────────────────────────────────────
+# ── Programmatic GitHub content fetching (0 Gemini calls) ──────────────────────
 
-def _parse_retry_delay(error_msg: str, default: float = 20.0) -> float:
-    """Extract the retry delay (in seconds) from a 429 error message string."""
-    match = re.search(r"retryDelay.*?(\d+)s", error_msg)
-    if match:
-        return float(match.group(1)) + 2.0  # add 2s buffer
-    return default
+async def fetch_repo_code_contents(repo_url: str) -> str:
+    parsed = _parse_owner_repo(repo_url)
+    if not parsed:
+        raise ValueError(f"Invalid GitHub URL: {repo_url}")
+    owner, repo = parsed
+    
+    print(f"Fetching file list for {owner}/{repo}...")
+    files_str = await list_repo_files.func(owner, repo, "")
+    try:
+        files = json.loads(files_str)
+    except Exception as e:
+        print("Failed to parse file list JSON:", e)
+        return f"Error listing repository files: {files_str}"
+        
+    allowed_extensions = {'.py', '.js', '.ts', '.go', '.java', '.cpp', '.c', '.rs', '.rb', '.php', '.cs', '.html', '.css'}
+    allowed_names = {'requirements.txt', 'package.json', 'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'README.md', 'README'}
+    
+    file_paths = []
+    subdirs = []
+    
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        ftype = f.get("type")
+        path = f.get("path", "")
+        name = f.get("name", "")
+        
+        if ftype == "file":
+            ext = os.path.splitext(name)[1].lower()
+            if ext in allowed_extensions or name in allowed_names:
+                file_paths.append(path)
+        elif ftype == "dir" and name in {"src", "app", "lib", "tools", "agents"}:
+            subdirs.append(path)
+            
+    # If we have less than 4 code files, let's scan one level down in main directories
+    if len(file_paths) < 4 and subdirs:
+        for subdir in subdirs[:2]:
+            print(f"Scanning subdirectory: {subdir}...")
+            try:
+                sub_files_str = await list_repo_files.func(owner, repo, subdir)
+                sub_files = json.loads(sub_files_str)
+                for f in sub_files:
+                    if isinstance(f, dict) and f.get("type") == "file":
+                        path = f.get("path", "")
+                        name = f.get("name", "")
+                        ext = os.path.splitext(name)[1].lower()
+                        if ext in allowed_extensions or name in allowed_names:
+                            file_paths.append(path)
+            except Exception as e:
+                print(f"Failed to scan {subdir}: {e}")
+                
+    selected_paths = file_paths[:8]
+    print(f"Selected {len(selected_paths)} files for analysis: {selected_paths}")
+    
+    combined_content = []
+    for path in selected_paths:
+        print(f"Fetching content of: {path}...")
+        try:
+            content = await get_scrubbed_file_contents.func(owner, repo, path)
+            # Try to parse the content JSON to extract the clean file text
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict) and "content" in data:
+                    raw_content = data["content"]
+                    if data.get("encoding") == "base64":
+                        try:
+                            if "\n" not in raw_content:
+                                decoded_bytes = base64.b64decode(raw_content)
+                                raw_content = decoded_bytes.decode("utf-8", errors="ignore")
+                        except Exception:
+                            pass
+                    content = raw_content
+            except Exception:
+                pass
+                
+            combined_content.append(f"=== FILE: {path} ===\n{content}\n")
+        except Exception as e:
+            print(f"Failed to fetch content of {path}: {e}")
+            combined_content.append(f"=== FILE: {path} ===\n[Error fetching content: {e}]\n")
+            
+    return "\n".join(combined_content)
 
 
-async def run_with_retry(repo_url: str) -> str:
-    """Run the coordinator agent, retrying automatically on rate-limit (429) errors."""
-    session_service = InMemorySessionService()
+# ── Run agent single-turn helper (Exactly 1 Gemini call) ──────────────────────
 
+async def run_agent_single_turn(agent, user_prompt, session_service) -> str:
+    session = await session_service.create_session(app_name=agent.name, user_id=USER_ID)
+    runner = Runner(
+        agent=agent,
+        app_name=agent.name,
+        session_service=session_service,
+    )
     user_message = genai_types.Content(
         role="user",
-        parts=[genai_types.Part(text=f"Please analyze this GitHub repository: {repo_url}")]
+        parts=[genai_types.Part(text=user_prompt)]
+    )
+    async for event in runner.run_async(
+        user_id=USER_ID,
+        session_id=session.id,
+        new_message=user_message,
+    ):
+        if event.is_final_response():
+            if event.content and event.content.parts:
+                res = event.content.parts[0].text
+                if not res or res.strip() == "":
+                    raise RuntimeError("API returned empty response (likely rate limit/quota hit).")
+                return res
+            raise RuntimeError("API returned empty response.")
+    raise RuntimeError(f"Agent {agent.name} failed to produce a response.")
+
+
+# ── Rate-limit retry & execution flow (Exactly 3 Gemini calls total) ──────────
+
+async def run_with_retry(repo_url: str) -> str:
+    """Run the three agents sequentially, retrying automatically on rate-limit (429) errors."""
+    session_service = InMemorySessionService()
+
+    # Fetch repository contents programmatically (0 Gemini calls)
+    try:
+        repo_contents = await fetch_repo_code_contents(repo_url)
+    except Exception as e:
+        return f"[ERROR] Failed to fetch repository contents: {e}"
+
+    prompt_cq = (
+        f"Here is the source code for the GitHub repository {repo_url}:\n\n"
+        f"{repo_contents}\n\n"
+        f"Please analyze its code quality and output your findings."
+    )
+    prompt_sec = (
+        f"Here is the source code for the GitHub repository {repo_url}:\n\n"
+        f"{repo_contents}\n\n"
+        f"Please scan it for security vulnerabilities and output your findings."
     )
 
     for attempt in range(1, MAX_RETRIES + 1):
         current_model = get_available_model()
         print(f"\n[Attempt {attempt}/{MAX_RETRIES}] Active model: {current_model}")
         
-        # Create a fresh session for each attempt so state doesn't bleed across retries
-        session = await session_service.create_session(app_name=APP_NAME, user_id=USER_ID)
-
-        runner = Runner(
-            agent=root_agent,
-            app_name=APP_NAME,
-            session_service=session_service,
-        )
-
         try:
-            async for event in runner.run_async(
-                user_id=USER_ID,
-                session_id=session.id,
-                new_message=user_message,
-            ):
-                if event.is_final_response():
-                    if event.content and event.content.parts:
-                        return event.content.parts[0].text
-                    
-                    # ADK swallows the 429 ResourceExhausted exception and yields an empty response.
-                    # We treat this as a rate-limit/internal error and retry.
-                    if attempt < MAX_RETRIES:
-                        delay = 10.0
-                        print(f"\n[Warning] Agent returned empty response (likely 429 quota hit).")
-                        new_model = fallback_to_next_model()
-                        print(f"Switched model from {current_model} to {new_model} due to likely rate limit.")
-                        print(f"Waiting {delay}s before retry...")
-                        await asyncio.sleep(delay)
-                        break  # Break out of the event loop to retry
-                    else:
-                        return (
-                            f"[ERROR] Agent failed to produce a response after {MAX_RETRIES} attempts.\n"
-                            "This is likely due to the Gemini API free-tier quota being exhausted (5 requests/minute)."
-                        )
+            # 1. Code Quality Agent run (1 call)
+            print("Invoking Code Quality Agent...")
+            report_cq = await run_agent_single_turn(code_quality_agent, prompt_cq, session_service)
+            
+            # 2. Security Agent run (1 call)
+            print("Invoking Security Agent...")
+            report_sec = await run_agent_single_turn(security_agent, prompt_sec, session_service)
+            
+            # 3. Coordinator Agent run to merge (1 merge call)
+            print("Invoking Coordinator Agent to merge results...")
+            prompt_coord = (
+                f"Please compile the final report for repository {repo_url} using these findings:\n\n"
+                f"--- CODE QUALITY FINDINGS ---\n{report_cq}\n\n"
+                f"--- SECURITY FINDINGS ---\n{report_sec}"
+            )
+            report_final = await run_agent_single_turn(root_agent, prompt_coord, session_service)
+            
+            return report_final
 
         except BaseException as e:
             err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err:
+            if "429" in err or "RESOURCE_EXHAUSTED" in err or "503" in err or "UNAVAILABLE" in err or "rate limit" in err or "quota" in err or "empty response" in err:
                 delay = 10.0
                 if attempt < MAX_RETRIES:
                     new_model = fallback_to_next_model()
